@@ -22,6 +22,7 @@ from db import _METRIC_WRITER
 import engine_settings
 import diaglog
 import engine_stats
+import on_demand
 from upstream import _fetch_upstream_body, _hls_response, HLS_MEDIA_TYPE
 from legacy_proxy import _sample_aes_proxy_stream
 import ffmpeg_proc
@@ -448,6 +449,8 @@ async def _serve_channel_playlist(team_id: str, request: Request) -> Response:
         return Response(status_code=200, media_type=HLS_MEDIA_TYPE, headers={"Cache-Control": "no-cache"})
     if data.get("type") == "multiview":
         _touch_multiview_viewer(team_id)
+    else:
+        on_demand.touch(team_id)
     _maybe_record_playback_event(team_id)
 
     async def sample_aes():

@@ -57,6 +57,7 @@ from db import (
 import security
 from security import _configure_dashboard_auth, CsrfOriginMiddleware
 import http_hardening
+import on_demand
 import scrapers
 import catalog
 from catalog import _special_channel_for, _sport_labeled_name, resolve_espn_logo
@@ -176,8 +177,10 @@ async def lifespan(app: FastAPI):
     _SCRAPE_IN_FLIGHT.clear()
     _TEAM_STATE_LOCKS.clear()
     try:
-        scrapers.PLAYWRIGHT_CLIENT = await async_playwright().start()
-        scrapers.SHARED_BROWSER = await scrapers.PLAYWRIGHT_CLIENT.chromium.launch(headless=True)
+        if not on_demand.ENABLED:
+            # On-demand mode starts Chromium only when a scrape needs it.
+            scrapers.PLAYWRIGHT_CLIENT = await async_playwright().start()
+            scrapers.SHARED_BROWSER = await scrapers.PLAYWRIGHT_CLIENT.chromium.launch(headless=True)
     except Exception as exc:
         # HTTP scraping remains available when Chromium is not installed or cannot start.
         scrapers.log_playwright_launch_failure("start Playwright; using HTTP extraction only", exc, logging.WARNING)
@@ -276,6 +279,7 @@ async def lifespan(app: FastAPI):
     multiview_watchdog_task = asyncio.create_task(multiview_watchdog(), name="multiview watchdog")
     # Tracked background task: _cancel_background_tasks() stops it at shutdown.
     _spawn_background_task(multiview_output_sweeper(), "multiview output sweep")
+    _spawn_background_task(on_demand.on_demand_loop(), "on-demand")
     try:
         jellyfin_url = get_setting("jellyfin_url", "") or os.getenv("JELLYFIN_URL", "")
         diaglog.startup_report({

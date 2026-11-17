@@ -36,6 +36,7 @@ from multiview import _MULTIVIEW_PROCESSES
 from network_safety import bounded_float, bounded_int
 from stream_extractor import verify_stream_live
 import network_games
+import on_demand
 from sports_matcher import REQUIRED_TEAMS, get_team_search_terms
 
 
@@ -111,6 +112,18 @@ async def _stop_team_scrape_loop(team_id: str) -> None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     _TEAM_STATE_LOCKS.pop(team_id, None)
+
+
+def kick_scrape_loop(team_id: str) -> None:
+    """Search for a channel's streams now, and have its scrape loop pick up the
+    awake cadence. The loop may still be in its startup delay, so the scrape is
+    started here rather than left to the loop (trigger_scrape skips duplicates)."""
+    if team_id not in stream_state:
+        return
+    _spawn_background_task(trigger_scrape(team_id), f"on-demand wake scrape team={team_id}")
+    wake_event = _TEAM_SCRAPE_WAKE_EVENTS.get(team_id)
+    if wake_event is not None:
+        wake_event.set()
 
 
 ACTIVE_HEALTH_INTERVAL = _positive_env_number("ACTIVE_HEALTH_INTERVAL", 3.0)
@@ -381,6 +394,11 @@ async def _trigger_scrape_unlocked(team_id: str, force: bool = False):
         current["exhausted"] = False
         return
 
+    if not on_demand.is_awake(team_id):
+        # On-demand mode: the schedule above stays current for the guide, but
+        # nobody is watching, so don't search providers.
+        return
+
     if (
         not force
         and (current.get("candidates") or is_multiview(current))
@@ -465,6 +483,10 @@ async def team_scrape_loop(team_id: str, initial_delay: float = 0.0):
         await asyncio.sleep(initial_delay)
     while team_id in stream_state:
         scrape_failed = False
+        # A wake-up requested before this scrape is satisfied by it.
+        pending_wake = _TEAM_SCRAPE_WAKE_EVENTS.get(team_id)
+        if pending_wake is not None:
+            pending_wake.clear()
         try:
             await trigger_scrape(team_id)
         except Exception as exc:
@@ -490,6 +512,9 @@ async def team_scrape_loop(team_id: str, initial_delay: float = 0.0):
                 delay = min(SCRAPE_REFRESH_SECONDS, 900)
         if scrape_failed:
             delay = min(delay, 60)
+        if not on_demand.is_awake(team_id):
+            # Asleep: only the schedule needs refreshing. Waking sets wake_event.
+            delay = max(delay, on_demand.IDLE_REFRESH_SECONDS)
         # +/-10% jitter keeps channels that started together from re-scraping in
         # lockstep (a pool/CPU/Chromium spike every SCRAPE_REFRESH_SECONDS).
         delay = max(15.0, delay * random.uniform(0.9, 1.1))
@@ -998,6 +1023,8 @@ async def standby_health_loop() -> None:
                     continue
                 if not include_unwatched and not SESSIONS.is_watched(team_id):
                     continue
+                if not on_demand.is_awake(team_id):
+                    continue
                 active_index = data.get("active_index", 0)
                 standbys = [c for i, c in enumerate(data["candidates"]) if i != active_index]
                 for candidate in standbys[:STANDBY_PROBES_PER_CHANNEL]:
@@ -1029,6 +1056,9 @@ def _failover_monitor_tick() -> None:
             continue
         if data.get("active_index", 0) >= len(candidates):
             data["active_index"] = 0
+
+        if not on_demand.is_awake(team_id):
+            continue
 
         if data.get("exhausted"):
             data["is_healthy"] = False

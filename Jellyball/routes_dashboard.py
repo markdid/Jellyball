@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from config import _log_failure, _public_base_url, _resource_path, _safe_team_id, _validate_upstream_url
+import on_demand
 from state import _spawn_background_task, new_channel_state, stream_state
 from db import (
     _bulk_set_favorite_sync,
@@ -700,6 +701,7 @@ async def toggle_favorite(team_id: str, auth: bool = Depends(verify_dashboard_au
 
 @router.post("/rescrape/{team_id}")
 async def manual_rescrape(team_id: str, auth: bool = Depends(verify_dashboard_auth)):
+    on_demand.wake(team_id, "manual rescrape")
     _spawn_background_task(trigger_scrape(team_id, force=True), f"manual rescrape {team_id}")
     return RedirectResponse(url="/?tab=channels&status=rescrape_started", status_code=303)
 
@@ -708,6 +710,7 @@ async def manual_rescrape(team_id: str, auth: bool = Depends(verify_dashboard_au
 async def bulk_rescrape(team_ids: str = Form(""), auth: bool = Depends(verify_dashboard_auth)):
     ids = list(dict.fromkeys(t.strip() for t in team_ids.split(",") if t.strip()))
     for team_id in ids:
+        on_demand.wake(team_id, "manual rescrape")
         _spawn_background_task(trigger_scrape(team_id, force=True), f"bulk rescrape {team_id}")
     return RedirectResponse(url="/?tab=channels&status=bulk_rescrape_started", status_code=303)
 

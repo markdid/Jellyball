@@ -244,6 +244,32 @@ async def refresh_guide(cfg: dict) -> RefreshResult:
     return result
 
 
+async def fetch_timers(cfg: dict) -> Optional[list]:
+    """Jellyfin's scheduled recordings (GET /LiveTv/Timers), or None when the
+    integration is not configured or Jellyfin can't be read."""
+    base = _validate_upstream_url(str(cfg.get("jellyfin_url") or ""), allow_private=True)
+    api_key = str(cfg.get("jellyfin_api_key") or "").strip()
+    if not base or not api_key or any(ch in api_key for ch in '"\\\r\n'):
+        return None
+    base = base.rstrip("/")
+    base_key = urllib.parse.urlsplit(base).netloc.lower()
+    try:
+        async with _make_client() as client:
+            response, _mode = await _authed_request(client, "GET", f"{base}/LiveTv/Timers", api_key, base_key)
+        if response.status_code != 200:
+            LOGGER.warning("Reading Jellyfin recordings failed: HTTP %s", response.status_code)
+            return None
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        LOGGER.warning("Reading Jellyfin recordings failed: %s", _describe_error(exc, base))
+        return None
+    except ValueError:
+        LOGGER.warning("Reading Jellyfin recordings failed: unreadable response")
+        return None
+    items = payload.get("Items") if isinstance(payload, dict) else None
+    return items if isinstance(items, list) else []
+
+
 def _log_outcome(result: RefreshResult) -> None:
     now = time.monotonic()
     if result.ok:

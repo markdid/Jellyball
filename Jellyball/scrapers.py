@@ -22,6 +22,7 @@ import provider_alerts
 import provider_settings
 import stream_language
 import provider_telemetry as telemetry
+import on_demand
 import state
 from db import _db_session, get_setting, get_setting_async, set_setting_async
 from network_safety import bounded_float, bounded_int, safe_get, validate_http_url
@@ -768,7 +769,10 @@ async def get_healthy_browser() -> Optional[Browser]:
         else:
             if time.monotonic() < _BROWSER_LAUNCH_RETRY_AT:
                 return None
-            LOGGER.warning("Playwright browser disconnected or missing. Relaunching...")
+            if SHARED_BROWSER is None and on_demand.ENABLED:
+                LOGGER.info("Starting Playwright browser on demand")
+            else:
+                LOGGER.warning("Playwright browser disconnected or missing. Relaunching...")
 
         try:
             if SHARED_BROWSER:
@@ -791,6 +795,31 @@ async def get_healthy_browser() -> Optional[Browser]:
             _BROWSER_LAUNCH_RETRY_AT = time.monotonic() + BROWSER_LAUNCH_RETRY_SECONDS
             log_playwright_launch_failure("relaunch Playwright browser", exc)
             return None
+
+
+async def close_idle_browser() -> None:
+    """Close Chromium and the Playwright driver while nothing needs them (on-demand
+    mode); get_healthy_browser() starts them again on the next scrape."""
+    global SHARED_BROWSER, PLAYWRIGHT_CLIENT, _BROWSER_LAUNCH_INFO
+
+    async with _PLAYWRIGHT_LOCK:
+        if (SHARED_BROWSER is None and PLAYWRIGHT_CLIENT is None) or playwright_pages_in_use() > 0:
+            return
+        browser, client = SHARED_BROWSER, PLAYWRIGHT_CLIENT
+        SHARED_BROWSER = None
+        PLAYWRIGHT_CLIENT = None
+        _BROWSER_LAUNCH_INFO = None
+        try:
+            if browser is not None:
+                await browser.close()
+        except Exception as exc:
+            _log_failure("close idle Playwright browser", exc)
+        try:
+            if client is not None:
+                await client.stop()
+        except Exception as exc:
+            _log_failure("stop idle Playwright", exc)
+        LOGGER.info("On-demand: every channel is asleep; closed the Playwright browser")
 
 
 def _providers_for_search(always_live: bool = False):

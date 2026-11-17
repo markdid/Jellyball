@@ -165,6 +165,7 @@ files = [
     "Jellyball/jellyball_launcher.py",
     "Jellyball/leagues.py",
     "Jellyball/main.py",
+    "Jellyball/on_demand.py",
     "Jellyball/routes_stream.py",
     "Jellyball/sessions.py",
     "Jellyball/sports_catalog.py",
