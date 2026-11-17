@@ -57,6 +57,7 @@ from db import (
 import security
 from security import _configure_dashboard_auth, CsrfOriginMiddleware
 import http_hardening
+import auto_grid
 import on_demand
 import scrapers
 import catalog
@@ -240,6 +241,7 @@ async def lifespan(app: FastAPI):
         )
         _start_team_scrape_loop(team_id, initial_delay=random.uniform(0.0, STARTUP_SCRAPE_SPREAD_SECONDS))
 
+    auto_grid.ensure_channel()
     for mv in load_multiview_channels():
         channel_id = mv.channel_id
         try:

@@ -39,11 +39,22 @@ IDLE_REFRESH_SECONDS = bounded_float(os.getenv("ON_DEMAND_IDLE_REFRESH_SECONDS",
 # find one before falling back to "No Signal". Opening on No Signal and switching
 # later can leave Jellyfin without audio when the stream's audio format differs.
 TUNE_IN_WAIT_SECONDS = bounded_float(os.getenv("ON_DEMAND_TUNE_IN_WAIT_SECONDS", "40"), 40.0, 0.0, 170.0)
+# Warm-up: when the first channel wakes, every other channel searches once in
+# the background (spread over WARMUP_SPREAD_SECONDS) and keeps what it finds
+# while asleep, so flipping to it is quick. Repeated every
+# WARMUP_REFRESH_SECONDS while anything is watched.
+WARMUP = os.getenv("ON_DEMAND_WARMUP", "1").strip().lower() in ("1", "true", "yes", "on")
+WARMUP_SPREAD_SECONDS = bounded_float(os.getenv("ON_DEMAND_WARMUP_SPREAD_SECONDS", "120"), 120.0, 0.0, 3600.0)
+WARMUP_AWAKE_SECONDS = 180.0
+WARMUP_REFRESH_SECONDS = bounded_float(os.getenv("ON_DEMAND_WARMUP_REFRESH_SECONDS", "1800"), 1800.0, 300.0, 86400.0)
 LOOP_INTERVAL = 30.0
 
 _AWAKE_UNTIL: Dict[str, float] = {}
+_LAST_TUNED: Dict[str, float] = {}
 _LAST_AWAKE_AT = 0.0
 _LAST_TIMER_POLL = 0.0
+_LAST_WARMUP = 0.0
+_WARMUP_TASK: Optional[asyncio.Task] = None
 
 
 def _watched(team_id: str) -> bool:
@@ -76,16 +87,58 @@ def wake(team_id: str, reason: str, seconds: Optional[float] = None) -> None:
         return
     now = time.monotonic()
     was_awake = is_awake(team_id)
+    first_awake = reason == "tune-in" and not was_awake and not any_awake()
     _AWAKE_UNTIL[team_id] = max(_AWAKE_UNTIL.get(team_id, 0.0), now + (seconds or SLEEP_SECONDS))
     if not was_awake:
         LOGGER.info("On-demand: waking channel=%s (%s)", team_id, reason)
         from failover import kick_scrape_loop
         kick_scrape_loop(team_id)
+    if first_awake:
+        start_warmup(exclude=team_id)
 
 
 def touch(team_id: str) -> None:
     """A playlist request: wake the channel or keep it awake."""
+    _LAST_TUNED[team_id] = time.monotonic()
     wake(team_id, "tune-in")
+
+
+def recently_tuned(limit: int, within: Optional[float] = None) -> list:
+    """Channels tuned in within `within` seconds (default SLEEP_SECONDS), the
+    `limit` most recent, oldest first (the order they were opened)."""
+    cutoff = time.monotonic() - (SLEEP_SECONDS if within is None else within)
+    recent = [
+        (at, team_id) for team_id, at in _LAST_TUNED.items()
+        if at >= cutoff and (stream_state.get(team_id) or {}).get("type") != "multiview"
+        and team_id in stream_state
+    ]
+    recent.sort()
+    return [team_id for _, team_id in recent[-limit:]]
+
+
+def start_warmup(exclude: str = "") -> None:
+    """Have every sleeping channel search once, spread out, in the background."""
+    global _WARMUP_TASK, _LAST_WARMUP
+    if not ENABLED or not WARMUP or (_WARMUP_TASK is not None and not _WARMUP_TASK.done()):
+        return
+    _LAST_WARMUP = time.monotonic()
+    from state import _spawn_background_task
+    _WARMUP_TASK = _spawn_background_task(_warmup(exclude), "on-demand warm-up")
+
+
+async def _warmup(exclude: str) -> None:
+    team_ids = [
+        team_id for team_id, data in list(stream_state.items())
+        if team_id != exclude and data.get("type") != "multiview"
+    ]
+    if not team_ids:
+        return
+    LOGGER.info("On-demand: warming up %d other channels over %.0fs", len(team_ids), WARMUP_SPREAD_SECONDS)
+    step = WARMUP_SPREAD_SECONDS / len(team_ids)
+    for team_id in team_ids:
+        if not is_awake(team_id):
+            wake(team_id, "warm-up", seconds=WARMUP_AWAKE_SECONDS)
+        await asyncio.sleep(step)
 
 
 async def wait_for_streams(team_id: str) -> None:
@@ -200,6 +253,10 @@ async def on_demand_loop() -> None:
                     LOGGER.info("On-demand: channel=%s asleep", team_id)
             if any_awake():
                 _LAST_AWAKE_AT = now
+            if WARMUP and now - _LAST_WARMUP >= WARMUP_REFRESH_SECONDS and any(
+                _watched(team_id) for team_id in list(stream_state)
+            ):
+                start_warmup()
             elif now - _LAST_AWAKE_AT >= BROWSER_IDLE_SECONDS:
                 import scrapers
                 await scrapers.close_idle_browser()

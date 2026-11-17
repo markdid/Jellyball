@@ -419,7 +419,7 @@ def _build_multiview_ffmpeg_args(
     layout = data.get("layout", "grid_2x2")
     encoder = (encoder or MULTIVIEW_HWACCEL).lower()
     if hw_decode is None:
-        hw_decode = encoder == "nvenc"
+        hw_decode = encoder in _HW_DECODE_API
     audio_presence = (
         [has_audio is True for has_audio in audio_presence] if audio_presence else [True] * len(member_team_ids)
     )
@@ -436,7 +436,10 @@ def _build_multiview_ffmpeg_args(
             # stream when NVDEC can't handle a codec/profile, but a CUDA
             # *device* failure (no/broken driver) is fatal for the whole run;
             # _start_multiview_run then retries without -hwaccel.
-            args += ["-hwaccel", "cuda"]
+            # QSV decodes on the Intel GPU the same way (frames downloaded for
+            # the CPU filters); the GPU choice follows MULTIVIEW_HWACCEL, not a
+            # libx264 fallback encoder.
+            args += ["-hwaccel", _HW_DECODE_API.get(MULTIVIEW_HWACCEL, "cuda")]
         args += [
             # Our own normalized sessions (one program, fixed PIDs): a short
             # probe is plenty, and it opens each input much faster than the
@@ -589,6 +592,8 @@ _HW_ENCODER_MARKERS = {
     ),
 }
 _HW_ENCODER_NAMES = {"nvenc": ("h264_nvenc", "hevc_nvenc"), "qsv": ("h264_qsv", "hevc_qsv")}
+# -hwaccel used to decode the inputs for each GPU MULTIVIEW_HWACCEL.
+_HW_DECODE_API = {"nvenc": "cuda", "qsv": "qsv"}
 # CUDA *device* setup failures (no/broken NVIDIA driver). Unlike the per-stream
 # NVDEC fallback these are fatal for every input opened with -hwaccel cuda
 # (ffmpeg 9: "Hardware device setup failed for decoder" aborts the run), so a
@@ -597,6 +602,8 @@ _CUDA_INIT_FAILURE_MARKERS = (
     "cannot load nvcuda", "cannot load libcuda", "could not dynamically load cuda",
     "device creation failed", "no device available for decoder", "hardware device setup failed",
     "cuinit",
+    # QSV decoding (MULTIVIEW_HWACCEL=qsv): no render node, driver or libvpl.
+    "failed to create a qsv device", "error creating a mfx session", "failed to initialize vaapi connection",
 )
 _FFMPEG_LOG_CONTEXT_RE = re.compile(r"^\s*\[([^\]]*)\]\s*")
 
@@ -667,7 +674,7 @@ def _multiview_encoder_plan(now: Optional[float] = None) -> Tuple[str, bool]:
     ):
         encoder = "none"
     cuda_broken = _CUDA_DECODE_FAILED_AT is not None and now - _CUDA_DECODE_FAILED_AT < NVENC_FALLBACK_SECONDS
-    return encoder, MULTIVIEW_HWACCEL == "nvenc" and not cuda_broken
+    return encoder, MULTIVIEW_HWACCEL in _HW_DECODE_API and not cuda_broken
 
 
 def _multiview_audio_index(data: dict) -> int:
@@ -677,6 +684,8 @@ def _multiview_audio_index(data: dict) -> int:
 
 
 def _multiview_member_label(team_id: str) -> str:
+    if team_id.startswith("__empty_"):
+        return "No Signal"  # an unused auto Multi-View pane (auto_grid)
     member = stream_state.get(team_id)
     return str(member.get("name") or team_id) if member else f"{team_id} (removed)"
 
@@ -828,14 +837,14 @@ async def _start_multiview_run(channel_id: str, data: dict) -> None:
             hw_decode = hw_decode and not cuda_broken
             LOGGER.warning(
                 "%s unavailable for multiview channel=%s (%s); retrying with libx264%s, GPU re-tried in %.0fs",
-                encoder.upper(), channel_id, error, " + CUDA decoding" if hw_decode else "", NVENC_FALLBACK_SECONDS,
+                encoder.upper(), channel_id, error, " + GPU decoding" if hw_decode else "", NVENC_FALLBACK_SECONDS,
             )
             encoder = "none"
             continue
         if hw_decode and _looks_like_cuda_init_failure(lines):
             _CUDA_DECODE_FAILED_AT = time.monotonic()
             hw_decode = False
-            LOGGER.warning("CUDA decoding unavailable for multiview channel=%s (%s); retrying with software decoding", channel_id, error)
+            LOGGER.warning("GPU decoding unavailable for multiview channel=%s (%s); retrying with software decoding", channel_id, error)
             continue
         break
     _record_multiview_failure(channel_id, error)
@@ -935,7 +944,7 @@ async def _launch_multiview_run(
             _clear_multiview_failure(channel_id)
             LOGGER.info(
                 "Multi-View running channel=%s run=%d encoder=%s%s",
-                channel_id, run_id, encoder, " (CUDA decoding)" if hw_decode else "",
+                channel_id, run_id, encoder, " (GPU decoding)" if hw_decode else "",
             )
             for session_id in _multiview_view_session_ids(channel_id):
                 SESSIONS.poke(session_id)

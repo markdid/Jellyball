@@ -27,6 +27,7 @@ from catalog import (
     parse_team_schedule,
     xmltv_ts,
 )
+import auto_grid
 from multiview import _multiview_member_label, MULTIVIEW_AUDIO_CHANNELS
 from stream_extractor import DEFAULT_USER_AGENT
 
@@ -101,7 +102,8 @@ def _multiview_audio_tvg_id(base_tvg_id: str, member_team_id: str) -> str:
 
 def _multiview_audio_channels(channel_id: str, data: dict) -> List[Tuple[str, str, str]]:
     """(tvg-id, display name, URL path) for each per-audio Multi-View channel."""
-    if data.get("type") != "multiview" or not MULTIVIEW_AUDIO_CHANNELS:
+    if data.get("type") != "multiview" or not MULTIVIEW_AUDIO_CHANNELS or auto_grid.is_auto_grid(channel_id):
+        # The auto grid's members change on every tune-in: no per-audio channels.
         return []
     base_tvg_id = _channel_tvg_id(channel_id, data)
     mv_name = str(data.get("name") or channel_id)

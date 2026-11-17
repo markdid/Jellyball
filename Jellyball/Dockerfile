@@ -26,6 +26,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# jellyfin-ffmpeg (with its bundled Intel media driver) for Intel Quick Sync
+# Multi-View: MULTIVIEW_HWACCEL=qsv, MULTIVIEW_FFMPEG_PATH=/usr/lib/jellyfin-ffmpeg/ffmpeg,
+# and /dev/dri passed to the container. amd64 only; other platforms skip it.
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+        && mkdir -p /etc/apt/keyrings \
+        && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key -o /etc/apt/keyrings/jellyfin.asc \
+        && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/jellyfin.asc] https://repo.jellyfin.org/debian bookworm main" \
+            > /etc/apt/sources.list.d/jellyfin.list \
+        && apt-get update && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 \
+        && rm -rf /var/lib/apt/lists/* \
+        && /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -encoders | grep -q h264_qsv; \
+    fi
+
 # Install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \

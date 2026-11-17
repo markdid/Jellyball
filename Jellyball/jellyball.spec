@@ -177,6 +177,7 @@ hiddenimports = [
     "dashboard_cards",
     "network_games",
     "on_demand",
+    "auto_grid",
     "dns_override",
     "stream_language",
     "diaglog",
