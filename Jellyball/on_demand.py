@@ -35,6 +35,10 @@ TIMER_POLL_SECONDS = bounded_float(os.getenv("ON_DEMAND_TIMER_POLL_SECONDS", "30
 BROWSER_IDLE_SECONDS = bounded_float(os.getenv("ON_DEMAND_BROWSER_IDLE_SECONDS", "300"), 300.0, 30.0, 86400.0)
 # A sleeping channel's scrape loop only refreshes its schedule this often.
 IDLE_REFRESH_SECONDS = bounded_float(os.getenv("ON_DEMAND_IDLE_REFRESH_SECONDS", "3600"), 3600.0, 300.0, 86400.0)
+# On a tune-in to a channel with no streams yet, wait this long for the search to
+# find one before falling back to "No Signal". Opening on No Signal and switching
+# later can leave Jellyfin without audio when the stream's audio format differs.
+TUNE_IN_WAIT_SECONDS = bounded_float(os.getenv("ON_DEMAND_TUNE_IN_WAIT_SECONDS", "40"), 40.0, 0.0, 170.0)
 LOOP_INTERVAL = 30.0
 
 _AWAKE_UNTIL: Dict[str, float] = {}
@@ -82,6 +86,32 @@ def wake(team_id: str, reason: str, seconds: Optional[float] = None) -> None:
 def touch(team_id: str) -> None:
     """A playlist request: wake the channel or keep it awake."""
     wake(team_id, "tune-in")
+
+
+async def wait_for_streams(team_id: str) -> None:
+    """Hold a tune-in until the channel has a stream to play, up to
+    TUNE_IN_WAIT_SECONDS, so Jellyfin opens on the real stream."""
+    if not ENABLED or TUNE_IN_WAIT_SECONDS <= 0:
+        return
+    data = stream_state.get(team_id)
+    if data is None or data.get("type") == "multiview" or data.get("candidates"):
+        return
+    started = time.monotonic()
+    deadline = started + TUNE_IN_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.5)
+        data = stream_state.get(team_id)
+        if data is None:
+            return
+        if data.get("candidates"):
+            LOGGER.info("On-demand: channel=%s found a stream %.1fs after tune-in", team_id, time.monotonic() - started)
+            return
+        if time.monotonic() - started > 2.0:
+            # The search finished without finding anything: stop waiting.
+            from failover import _SCRAPE_IN_FLIGHT
+            if team_id not in _SCRAPE_IN_FLIGHT:
+                return
+    LOGGER.info("On-demand: channel=%s has no stream after %.0fs; showing No Signal meanwhile", team_id, TUNE_IN_WAIT_SECONDS)
 
 
 def _channels_by_title() -> Dict[str, str]:

@@ -451,6 +451,7 @@ async def _serve_channel_playlist(team_id: str, request: Request) -> Response:
         _touch_multiview_viewer(team_id)
     else:
         on_demand.touch(team_id)
+        await on_demand.wait_for_streams(team_id)
     _maybe_record_playback_event(team_id)
 
     async def sample_aes():

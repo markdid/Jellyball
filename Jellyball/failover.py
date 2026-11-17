@@ -291,7 +291,9 @@ def _resolve_schedule_status(
     return previous_start, previous_stop, ("always_live" if always_live else "lookup_failed")
 
 
-async def _scrape_network_game(team_id: str, current: dict, game: "network_games.Game", query: str, team_name: str) -> list:
+async def _scrape_network_game(
+    team_id: str, current: dict, game: "network_games.Game", query: str, team_name: str, on_partial=None,
+) -> list:
     """Streams for the game a network channel carries: the game's own event
     streams first (searched like a team channel, both teams' names), then for a
     cable network its linear stream, which carries the game too."""
@@ -306,6 +308,7 @@ async def _scrape_network_game(team_id: str, current: dict, game: "network_games
         try:
             return await master_scrape(
                 game.search_query, team_name=game.name, team_id=team_id, search_terms=terms, always_live=False,
+                on_partial=on_partial,
             )
         finally:
             REQUIRED_TEAMS.reset(token)
@@ -314,6 +317,7 @@ async def _scrape_network_game(team_id: str, current: dict, game: "network_games
     if not network_games.is_broadcast_network(current):
         searches.append(master_scrape(
             query, team_name=team_name, team_id=team_id, search_terms=current.get("search_terms") or None, always_live=True,
+            on_partial=on_partial,
         ))
     results = await asyncio.gather(*searches, return_exceptions=True)
     merged: list = []
@@ -412,8 +416,25 @@ async def _trigger_scrape_unlocked(team_id: str, force: bool = False):
         return
 
     previous_candidates = current.get("candidates", [])
+
+    def _install_partial(streams: List[dict]) -> None:
+        # A channel with nothing to play takes the first playable provider
+        # result now instead of waiting for the slowest provider's timeout (a
+        # network channel's game search can take minutes). The full result is
+        # merged below. Runs under this channel's state lock, held by the caller.
+        live = stream_state.get(team_id)
+        if live is None or (live.get("candidates") and not live.get("exhausted")):
+            return
+        merged, merged_index = _merge_stream_candidates([], 0, streams, keep_active=False)
+        live["candidates"] = merged
+        live["active_index"] = merged_index
+        live["exhausted"] = False
+        live["is_healthy"] = True
+        SESSIONS.poke(team_id)
+        LOGGER.info("Stream search found streams early team=%s count=%d", team_id, len(merged))
+
     if game is not None:
-        new_candidates = await _scrape_network_game(team_id, current, game, query, team_name)
+        new_candidates = await _scrape_network_game(team_id, current, game, query, team_name, on_partial=_install_partial)
     else:
         new_candidates = await master_scrape(
             query,
@@ -421,6 +442,7 @@ async def _trigger_scrape_unlocked(team_id: str, force: bool = False):
             team_id=team_id,
             search_terms=current.get("search_terms") or None,
             always_live=always_live,
+            on_partial=_install_partial,
         )
     current = stream_state.get(team_id)
     if current is None:
