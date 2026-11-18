@@ -435,6 +435,14 @@ def _serve_session_segment(session_id: str, seq: int) -> Response:
     )
 
 
+def _is_multiview_input_request(request: Request) -> bool:
+    """A Multi-View ffmpeg reading one of its members (loopback, ffmpeg's own
+    Lavf user agent), as opposed to Jellyfin or a viewer tuning in."""
+    host = request.client.host if request.client else ""
+    agent = request.headers.get("user-agent", "")
+    return host in ("127.0.0.1", "::1") and agent.startswith("Lavf")
+
+
 async def _serve_channel_playlist(team_id: str, request: Request) -> Response:
     # Late import: multiview and failover import this module, so they are reached at call time.
     from multiview import _touch_multiview_viewer
@@ -453,7 +461,7 @@ async def _serve_channel_playlist(team_id: str, request: Request) -> Response:
             await auto_grid.prepare_tune_in(team_id)
         _touch_multiview_viewer(team_id)
     else:
-        on_demand.touch(team_id)
+        on_demand.touch(team_id, viewer=not _is_multiview_input_request(request))
         await on_demand.wait_for_streams(team_id)
     _maybe_record_playback_event(team_id)
 

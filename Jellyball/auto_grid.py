@@ -1,12 +1,16 @@
 """Auto Multi-View: one grid channel built from the channels you just watched.
 
-With MULTIVIEW_AUTO_GRID=1 Jellyball lists a "Multi-View" channel. Tuning in
-to it shows the channels tuned in within the last ON_DEMAND_SLEEP_SECONDS, up
-to four, in the order they were opened: two side by side, three or four in a
-2x2 grid. With fewer than two recent channels it fills in with games that are
-live now (your team channels first, then networks carrying a game). The
-members are picked again on every fresh tune-in, so it is driven entirely from
-the Jellyfin app.
+With MULTIVIEW_AUTO_GRID=1 Jellyball lists a "Multi-View" channel, driven
+entirely from the Jellyfin app. On each fresh tune-in it looks at the channels
+opened since the grid was last watched:
+
+- two or more: a new grid of those (the four most recent, in the order opened);
+- one: added to the previous grid (the oldest pane drops when it is full);
+- none: the previous grid again.
+
+Two channels show side by side, three or four in a 2x2 grid. With fewer than
+two channels it fills in with games that are live now (your team channels
+first, then networks carrying a game).
 """
 
 import asyncio
@@ -70,10 +74,17 @@ def _live_games() -> List[str]:
     return teams + networks
 
 
-def choose_members() -> Tuple[List[str], str]:
-    """(member ids, layout) for a fresh tune-in."""
+def choose_members(previous: List[str], since: float) -> Tuple[List[str], str]:
+    """(member ids, layout) for a fresh tune-in, given the previous grid's
+    members and when the grid was last watched (monotonic time)."""
     import on_demand
-    members = on_demand.recently_tuned(4)
+    opened = on_demand.tuned_since(since, 4)
+    kept = [m for m in previous if not m.startswith(_EMPTY_PREFIX) and m in stream_state]
+    if len(opened) >= 2:
+        members = opened
+    else:
+        members = [m for m in kept if m not in opened] + opened
+        members = members[-4:]
     if len(members) < 2:
         for team_id in _live_games():
             if team_id not in members:
@@ -98,14 +109,23 @@ async def prepare_tune_in(channel_id: str) -> None:
     if data is None:
         return
     last = multiview._MULTIVIEW_LAST_VIEWER.get(channel_id, 0.0)
-    if time.monotonic() - last < RETUNE_GAP_SECONDS:
+    now = time.monotonic()
+    if now - last < RETUNE_GAP_SECONDS:
         return  # a playlist refresh from someone already watching
-    members, layout = choose_members()
+    # Never watched since startup: count channels opened within the wake window.
+    since = last if last > 0 else now - on_demand.SLEEP_SECONDS
+    members, layout = choose_members(list(data.get("member_team_ids") or []), since)
     real = [m for m in members if not m.startswith(_EMPTY_PREFIX)]
     if members != data.get("member_team_ids") or layout != data.get("layout"):
         LOGGER.info("Auto Multi-View: showing %s", ", ".join(real) or "nothing (no recent channels or live games)")
         await multiview._cancel_multiview_start(channel_id)
         await multiview._stop_multiview_process(channel_id)
+        # Start the viewer's session over too: carrying on from the old grid
+        # (a discontinuity) can leave Jellyfin silent when the new first
+        # member's audio format differs.
+        from sessions import SESSIONS
+        for session_id in multiview._multiview_view_session_ids(channel_id):
+            await SESSIONS.close(session_id)
         for mapping in (multiview._MULTIVIEW_FAILURES, multiview._MULTIVIEW_HOLDS, multiview._MULTIVIEW_REFUSALS):
             mapping.pop(channel_id, None)
         data["member_team_ids"] = members

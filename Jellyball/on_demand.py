@@ -97,16 +97,18 @@ def wake(team_id: str, reason: str, seconds: Optional[float] = None) -> None:
         start_warmup(exclude=team_id)
 
 
-def touch(team_id: str) -> None:
-    """A playlist request: wake the channel or keep it awake."""
-    _LAST_TUNED[team_id] = time.monotonic()
+def touch(team_id: str, viewer: bool = True) -> None:
+    """A playlist request: wake the channel or keep it awake. `viewer` is False
+    for a Multi-View reading its member, which doesn't count as tuning in."""
+    if viewer:
+        _LAST_TUNED[team_id] = time.monotonic()
     wake(team_id, "tune-in")
 
 
-def recently_tuned(limit: int, within: Optional[float] = None) -> list:
-    """Channels tuned in within `within` seconds (default SLEEP_SECONDS), the
-    `limit` most recent, oldest first (the order they were opened)."""
-    cutoff = time.monotonic() - (SLEEP_SECONDS if within is None else within)
+def tuned_since(since: float, limit: int) -> list:
+    """Channels a viewer tuned in to after monotonic time `since`, the `limit`
+    most recent, oldest first (the order they were opened)."""
+    cutoff = since
     recent = [
         (at, team_id) for team_id, at in _LAST_TUNED.items()
         if at >= cutoff and (stream_state.get(team_id) or {}).get("type") != "multiview"
