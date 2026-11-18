@@ -4,11 +4,12 @@ With MULTIVIEW_AUTO_GRID=1 Jellyball lists a "Multi-View" channel, driven
 entirely from the Jellyfin app. On each fresh tune-in it looks at the channels
 opened since the grid was last watched:
 
-- two or more: a new grid of those (the four most recent, in the order opened);
+- two or more: a new grid of those (the MAX_PANES most recent, in the order opened);
 - one: added to the previous grid (the oldest pane drops when it is full);
 - none: the previous grid again.
 
-Two channels show side by side, three or four in a 2x2 grid. With fewer than
+Two channels show side by side; with MULTIVIEW_AUTO_GRID_PANES=4, three or
+four show in a 2x2 grid. With fewer than
 two channels it fills in with games that are live now (your team channels
 first, then networks carrying a game).
 """
@@ -31,6 +32,9 @@ RETUNE_GAP_SECONDS = 15.0
 # How long a tune-in waits for the members' streams before starting the grid.
 MEMBER_WAIT_SECONDS = 25.0
 _EMPTY_PREFIX = "__empty_"
+# Most panes in the grid: 2 (side by side) or 4 (2x2). A small NAS can't decode
+# and encode four live games at once.
+MAX_PANES = 4 if os.getenv("MULTIVIEW_AUTO_GRID_PANES", "2").strip() == "4" else 2
 
 
 def ensure_channel() -> None:
@@ -78,21 +82,21 @@ def choose_members(previous: List[str], since: float) -> Tuple[List[str], str]:
     """(member ids, layout) for a fresh tune-in, given the previous grid's
     members and when the grid was last watched (monotonic time)."""
     import on_demand
-    opened = on_demand.tuned_since(since, 4)
+    opened = on_demand.tuned_since(since, MAX_PANES)
     kept = [m for m in previous if not m.startswith(_EMPTY_PREFIX) and m in stream_state]
     if len(opened) >= 2:
         members = opened
     else:
         members = [m for m in kept if m not in opened] + opened
-        members = members[-4:]
+        members = members[-MAX_PANES:]
     if len(members) < 2:
         for team_id in _live_games():
             if team_id not in members:
                 members.append(team_id)
-            if len(members) == 4:
+            if len(members) == MAX_PANES:
                 break
     target = 2 if len(members) <= 2 else 4
-    members = members[:4]
+    members = members[:MAX_PANES]
     while len(members) < target:
         members.append(f"{_EMPTY_PREFIX}{len(members) + 1}")
     return members, ("side_by_side_2" if target == 2 else "grid_2x2")

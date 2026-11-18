@@ -43,7 +43,7 @@ TUNE_IN_WAIT_SECONDS = bounded_float(os.getenv("ON_DEMAND_TUNE_IN_WAIT_SECONDS",
 # the background (one at a time) and keeps what it finds
 # while asleep, so flipping to it is quick. Repeated every
 # WARMUP_REFRESH_SECONDS while anything is watched.
-WARMUP = os.getenv("ON_DEMAND_WARMUP", "1").strip().lower() in ("1", "true", "yes", "on")
+WARMUP = os.getenv("ON_DEMAND_WARMUP", "0").strip().lower() in ("1", "true", "yes", "on")
 # Pause between one channel's warm-up search and the next.
 WARMUP_PAUSE_SECONDS = bounded_float(os.getenv("ON_DEMAND_WARMUP_PAUSE_SECONDS", "5"), 5.0, 0.0, 600.0)
 WARMUP_MAX_SEARCH_SECONDS = 180.0
