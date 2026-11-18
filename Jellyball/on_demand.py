@@ -40,11 +40,13 @@ IDLE_REFRESH_SECONDS = bounded_float(os.getenv("ON_DEMAND_IDLE_REFRESH_SECONDS",
 # later can leave Jellyfin without audio when the stream's audio format differs.
 TUNE_IN_WAIT_SECONDS = bounded_float(os.getenv("ON_DEMAND_TUNE_IN_WAIT_SECONDS", "40"), 40.0, 0.0, 170.0)
 # Warm-up: when the first channel wakes, every other channel searches once in
-# the background (spread over WARMUP_SPREAD_SECONDS) and keeps what it finds
+# the background (one at a time) and keeps what it finds
 # while asleep, so flipping to it is quick. Repeated every
 # WARMUP_REFRESH_SECONDS while anything is watched.
 WARMUP = os.getenv("ON_DEMAND_WARMUP", "1").strip().lower() in ("1", "true", "yes", "on")
-WARMUP_SPREAD_SECONDS = bounded_float(os.getenv("ON_DEMAND_WARMUP_SPREAD_SECONDS", "120"), 120.0, 0.0, 3600.0)
+# Pause between one channel's warm-up search and the next.
+WARMUP_PAUSE_SECONDS = bounded_float(os.getenv("ON_DEMAND_WARMUP_PAUSE_SECONDS", "5"), 5.0, 0.0, 600.0)
+WARMUP_MAX_SEARCH_SECONDS = 180.0
 WARMUP_AWAKE_SECONDS = 180.0
 WARMUP_REFRESH_SECONDS = bounded_float(os.getenv("ON_DEMAND_WARMUP_REFRESH_SECONDS", "1800"), 1800.0, 300.0, 86400.0)
 LOOP_INTERVAL = 30.0
@@ -135,12 +137,19 @@ async def _warmup(exclude: str) -> None:
     ]
     if not team_ids:
         return
-    LOGGER.info("On-demand: warming up %d other channels over %.0fs", len(team_ids), WARMUP_SPREAD_SECONDS)
-    step = WARMUP_SPREAD_SECONDS / len(team_ids)
+    LOGGER.info("On-demand: warming up %d other channels, one at a time", len(team_ids))
+    from failover import _SCRAPE_IN_FLIGHT
     for team_id in team_ids:
         if not is_awake(team_id):
             wake(team_id, "warm-up", seconds=WARMUP_AWAKE_SECONDS)
-        await asyncio.sleep(step)
+        # One search at a time: a small NAS can't run many (each may drive
+        # Chromium) while also serving the channel being watched.
+        await asyncio.sleep(2.0)
+        deadline = time.monotonic() + WARMUP_MAX_SEARCH_SECONDS
+        while team_id in _SCRAPE_IN_FLIGHT and time.monotonic() < deadline:
+            await asyncio.sleep(1.0)
+        await asyncio.sleep(WARMUP_PAUSE_SECONDS)
+    LOGGER.info("On-demand: warm-up finished")
 
 
 async def wait_for_streams(team_id: str) -> None:

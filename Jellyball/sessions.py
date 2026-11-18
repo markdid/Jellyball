@@ -299,20 +299,21 @@ async def _race_cold_candidates(channel_id: str, limit: int = 3, timeout: float 
     first healthy one (HTTP 200 with HLS content) the active candidate, instead
     of failing over serially through dead ones. Returns True when a healthy
     candidate was selected. Best-effort: failures leave active_index alone."""
-    from failover import _team_state_lock
-
-    async with _team_state_lock(channel_id):
-        data = stream_state.get(channel_id)
-        if not data or data.get("type") == "multiview":
-            return False
-        candidates = list(data.get("candidates") or [])[:limit]
-        if len(candidates) < 2:
-            return False
-        specs = []
-        for candidate in candidates:
-            spec = _candidate_source(candidate)
-            if spec is not None:
-                specs.append((candidate_source_key(candidate), spec))
+    # No channel state lock: reading the candidates and setting active_index
+    # below involve no await, so they can't interleave with a scrape's update,
+    # and a scrape holds that lock for its whole search (minutes for a network
+    # channel's game), which used to hold the tune-in that long.
+    data = stream_state.get(channel_id)
+    if not data or data.get("type") == "multiview":
+        return False
+    candidates = list(data.get("candidates") or [])[:limit]
+    if len(candidates) < 2:
+        return False
+    specs = []
+    for candidate in candidates:
+        spec = _candidate_source(candidate)
+        if spec is not None:
+            specs.append((candidate_source_key(candidate), spec))
     if len(specs) < 2:
         return False
 
@@ -348,23 +349,22 @@ async def _race_cold_candidates(channel_id: str, limit: int = 3, timeout: float 
     if winner is None:
         return False
 
-    async with _team_state_lock(channel_id):
-        data = stream_state.get(channel_id)
-        if not data:
-            return False
-        current = data.get("candidates") or []
-        for index, candidate in enumerate(current):
-            if candidate_source_key(candidate) == winner:
-                if index != data.get("active_index", 0):
-                    data["active_index"] = index
-                    data["exhausted"] = False
-                    LOGGER.info(
-                        "Cold-start race picked candidate channel=%s provider=%s",
-                        channel_id, candidate.get("provider", "Unknown"),
-                    )
-                SESSIONS.poke(channel_id)
-                return True
+    data = stream_state.get(channel_id)
+    if not data:
         return False
+    current = data.get("candidates") or []
+    for index, candidate in enumerate(current):
+        if candidate_source_key(candidate) == winner:
+            if index != data.get("active_index", 0):
+                data["active_index"] = index
+                data["exhausted"] = False
+                LOGGER.info(
+                    "Cold-start race picked candidate channel=%s provider=%s",
+                    channel_id, candidate.get("provider", "Unknown"),
+                )
+            SESSIONS.poke(channel_id)
+            return True
+    return False
 
 
 async def _serve_session_playlist(session_id: str, segment_prefix: str, legacy=None) -> Response:
