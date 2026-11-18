@@ -307,14 +307,17 @@ async def _race_cold_candidates(channel_id: str, limit: int = 3, timeout: float 
     if not data or data.get("type") == "multiview":
         return False
     candidates = list(data.get("candidates") or [])[:limit]
-    if len(candidates) < 2:
+    if not candidates:
         return False
     specs = []
     for candidate in candidates:
         spec = _candidate_source(candidate)
         if spec is not None:
             specs.append((candidate_source_key(candidate), spec))
-    if len(specs) < 2:
+    if not specs:
+        # A single candidate is checked too: skipping it put every
+        # one-source channel on "No Signal" for STARTUP_PLACEHOLDER_SECONDS,
+        # and the later switch can leave Jellyfin without audio.
         return False
 
     async def _probe(key: tuple, spec: SourceSpec) -> Optional[tuple]:

@@ -439,7 +439,7 @@ def _build_multiview_ffmpeg_args(
             # QSV decodes on the Intel GPU the same way (frames downloaded for
             # the CPU filters); the GPU choice follows MULTIVIEW_HWACCEL, not a
             # libx264 fallback encoder.
-            args += ["-hwaccel", _HW_DECODE_API.get(MULTIVIEW_HWACCEL, "cuda")]
+            args += list(_HW_DECODE_API.get(MULTIVIEW_HWACCEL, _HW_DECODE_API["nvenc"]))
         args += [
             # Our own normalized sessions (one program, fixed PIDs): a short
             # probe is plenty, and it opens each input much faster than the
@@ -593,7 +593,13 @@ _HW_ENCODER_MARKERS = {
 }
 _HW_ENCODER_NAMES = {"nvenc": ("h264_nvenc", "hevc_nvenc"), "qsv": ("h264_qsv", "hevc_qsv")}
 # -hwaccel used to decode the inputs for each GPU MULTIVIEW_HWACCEL.
-_HW_DECODE_API = {"nvenc": "cuda", "qsv": "qsv"}
+# QSV decodes through VAAPI on the same GPU: "-hwaccel qsv" keeps frames on the
+# GPU (the CPU scale/pad/xstack filters can't take them), VAAPI hands them back
+# to system memory by default.
+_HW_DECODE_API = {
+    "nvenc": ("-hwaccel", "cuda"),
+    "qsv": ("-hwaccel", "vaapi", "-hwaccel_device", os.getenv("MULTIVIEW_VAAPI_DEVICE", "/dev/dri/renderD128")),
+}
 # CUDA *device* setup failures (no/broken NVIDIA driver). Unlike the per-stream
 # NVDEC fallback these are fatal for every input opened with -hwaccel cuda
 # (ffmpeg 9: "Hardware device setup failed for decoder" aborts the run), so a
