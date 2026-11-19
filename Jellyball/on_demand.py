@@ -39,6 +39,10 @@ IDLE_REFRESH_SECONDS = bounded_float(os.getenv("ON_DEMAND_IDLE_REFRESH_SECONDS",
 # find one before falling back to "No Signal". Opening on No Signal and switching
 # later can leave Jellyfin without audio when the stream's audio format differs.
 TUNE_IN_WAIT_SECONDS = bounded_float(os.getenv("ON_DEMAND_TUNE_IN_WAIT_SECONDS", "40"), 40.0, 0.0, 170.0)
+# While a channel is watched or recorded with no stream (sites often post the
+# link only around tip-off), search again this often instead of every
+# SCRAPE_REFRESH_SECONDS (5 min).
+NO_STREAM_RETRY_SECONDS = bounded_float(os.getenv("NO_STREAM_RETRY_SECONDS", "60"), 60.0, 15.0, 3600.0)
 # Warm-up: when the first channel wakes, every other channel searches once in
 # the background (one at a time) and keeps what it finds
 # while asleep, so flipping to it is quick. Repeated every
@@ -62,6 +66,16 @@ _WARMUP_TASK: Optional[asyncio.Task] = None
 def _watched(team_id: str) -> bool:
     from sessions import SESSIONS
     return SESSIONS.is_watched(team_id)
+
+
+def waiting_for_stream(team_id: str) -> bool:
+    """Someone is watching or recording this channel and it has no stream
+    (they see No Signal), so its search should repeat every
+    NO_STREAM_RETRY_SECONDS instead of waiting out the normal refresh."""
+    data = stream_state.get(team_id)
+    if data is None or data.get("type") == "multiview" or data.get("candidates"):
+        return False
+    return _watched(team_id)
 
 
 def is_awake(team_id: str) -> bool:
@@ -168,7 +182,7 @@ async def wait_for_streams(team_id: str) -> None:
         if data is None:
             return
         if data.get("candidates"):
-            LOGGER.info("On-demand: channel=%s found a stream %.1fs after tune-in", team_id, time.monotonic() - started)
+            LOGGER.info("On-demand: channel=%s found a stream after a %.1fs wait", team_id, time.monotonic() - started)
             return
         if time.monotonic() - started > 2.0:
             # The search finished without finding anything: stop waiting.

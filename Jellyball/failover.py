@@ -534,6 +534,8 @@ async def team_scrape_loop(team_id: str, initial_delay: float = 0.0):
                 delay = min(SCRAPE_REFRESH_SECONDS, 900)
         if scrape_failed:
             delay = min(delay, 60)
+        if on_demand.waiting_for_stream(team_id):
+            delay = min(delay, on_demand.NO_STREAM_RETRY_SECONDS)
         if not on_demand.is_awake(team_id):
             # Asleep: only the schedule needs refreshing. Waking sets wake_event.
             delay = max(delay, on_demand.IDLE_REFRESH_SECONDS)

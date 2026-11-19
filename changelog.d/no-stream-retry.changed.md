@@ -1,0 +1,1 @@
+While a channel is watched or recorded with no stream, its search repeats every minute (`NO_STREAM_RETRY_SECONDS`) instead of every 5 minutes, so a recording picks up the game soon after a site posts the link.
