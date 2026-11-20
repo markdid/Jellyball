@@ -178,6 +178,7 @@ hiddenimports = [
     "network_games",
     "on_demand",
     "auto_grid",
+    "recording_breaks",
     "dns_override",
     "stream_language",
     "diaglog",

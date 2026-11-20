@@ -59,6 +59,7 @@ from security import _configure_dashboard_auth, CsrfOriginMiddleware
 import http_hardening
 import auto_grid
 import on_demand
+import recording_breaks
 import scrapers
 import catalog
 from catalog import _special_channel_for, _sport_labeled_name, resolve_espn_logo
@@ -282,6 +283,7 @@ async def lifespan(app: FastAPI):
     # Tracked background task: _cancel_background_tasks() stops it at shutdown.
     _spawn_background_task(multiview_output_sweeper(), "multiview output sweep")
     _spawn_background_task(on_demand.on_demand_loop(), "on-demand")
+    _spawn_background_task(recording_breaks.recording_breaks_loop(), "recording breaks")
     try:
         jellyfin_url = get_setting("jellyfin_url", "") or os.getenv("JELLYFIN_URL", "")
         diaglog.startup_report({

@@ -1,0 +1,1 @@
+Commercial breaks in Jellyfin recordings (`RECORDINGS_DIR`): each recording is scanned while it records, and the streaming site's "Commercial break" card and the No Signal slate are written to an .edl beside it for the Comskip Commercial Segments plugin to skip.
